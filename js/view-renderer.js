@@ -100,15 +100,17 @@ javascript:(function(){
       const parts = posStr.split(" ").map(s => parseFloat(s));
       const col = Math.round(parts[0] / step);
       const row = Math.round(parts[1] / step);
-      const id = (col * N) + row + 1; 
+      
+      // Diubah kembali ke urutan horizontal (row * N + col + 1)
+      const id = (row * N) + col + 1; 
 
       gridCells[slot].textContent = id;
       gridCells[slot].style.background = 'rgba(255,255,255,0.15)';
       gridCells[slot].style.border = 'none';
       
-      const slotCol = slot % N;
       const slotRow = Math.floor(slot / N);
-      const targetIdForThisSlot = (slotCol * N) + slotRow + 1;
+      const slotCol = slot % N;
+      const targetIdForThisSlot = (slotRow * N) + slotCol + 1;
       
       if (id === targetIdForThisSlot) {
           gridCells[slot].style.color = '#38bdf8';
