@@ -1,129 +1,178 @@
 javascript:(function(){
   "use strict";
 
-  if (window.aniMinimapInterval) clearInterval(window.aniMinimapInterval);
-  const existing = document.getElementById('ani-minimap-ui');
-  if (existing) existing.remove();
-
-  const container = document.createElement('div');
-  container.id = 'ani-minimap-ui';
-  container.style.cssText = 'position:fixed; top:20px; right:20px; z-index:1000000; background:rgba(15,23,42,0.9); border:2px solid #38bdf8; border-radius:10px; padding:10px; box-shadow:0 8px 30px rgba(0,0,0,0.6); font-family:sans-serif; color:white; width:220px; min-height: 250px; box-sizing:border-box; display:flex; flex-direction:column; resize:both; overflow:auto;';
-
-  const header = document.createElement('div');
-  header.textContent = 'Minimap (Geser & Tarik)';
-  header.style.cssText = 'text-align:center; font-weight:bold; font-size:12px; margin-bottom:8px; cursor:move; padding:6px; background:rgba(56,189,248,0.2); border-radius:5px; user-select:none; touch-action:none; border: 1px dashed #38bdf8; flex-shrink:0;';
-  container.appendChild(header);
-
-  const gridDiv = document.createElement('div');
-  gridDiv.style.cssText = 'display:grid; flex-grow:1; gap:4px;';
-  container.appendChild(gridDiv);
-  
-  document.body.appendChild(container);
-
-  let isDragging = false, startX, startY, startLeft, startTop;
-  
-  header.addEventListener('mousedown', startDrag);
-  header.addEventListener('touchstart', startDrag, {passive: false});
-
-  function startDrag(e) {
-    isDragging = true;
-    const clientX = e.type.includes('touch') ? e.touches[0].clientX : e.clientX;
-    const clientY = e.type.includes('touch') ? e.touches[0].clientY : e.clientY;
-    startX = clientX; 
-    startY = clientY;
-    startLeft = container.offsetLeft; 
-    startTop = container.offsetTop;
-    
-    document.addEventListener('mousemove', onDrag);
-    document.addEventListener('touchmove', onDrag, {passive: false});
-    document.addEventListener('mouseup', stopDrag);
-    document.addEventListener('touchend', stopDrag);
+  // --- Bersihin sisa run sebelumnya biar ga numpuk pas di-run ulang ---
+  if (window.__aniSolveGuide && window.__aniSolveGuide.destroy) {
+    window.__aniSolveGuide.destroy();
   }
 
-  function onDrag(e) {
-    if (!isDragging) return;
-    e.preventDefault(); 
-    const clientX = e.type.includes('touch') ? e.touches[0].clientX : e.clientX;
-    const clientY = e.type.includes('touch') ? e.touches[0].clientY : e.clientY;
-    
-    container.style.left = (startLeft + clientX - startX) + 'px';
-    container.style.top = (startTop + clientY - startY) + 'px';
-    container.style.right = 'auto'; 
+  const board = document.getElementById('anipuzzle-board') || document.querySelector('.anipuzzle-board');
+  if (!board) {
+    alert('Papan AniPuzzle belum ketemu. Klik "Mulai Main" dulu baru jalankan script ini.');
+    return;
   }
 
-  function stopDrag() {
-    isDragging = false;
-    document.removeEventListener('mousemove', onDrag);
-    document.removeEventListener('touchmove', onDrag);
-    document.removeEventListener('mouseup', stopDrag);
-    document.removeEventListener('touchend', stopDrag);
-  }
-
-  let currentN = 0;
-  let gridCells = [];
-
-  function updateMinimap() {
-    const tiles = document.querySelectorAll('.anipuzzle-tile');
-    if (tiles.length === 0) return;
-
-    const N = Math.round(Math.sqrt(tiles.length));
-    const step = N > 1 ? 100 / (N - 1) : 100;
-
-    if (N !== currentN) {
-      currentN = N;
-      gridDiv.innerHTML = '';
-      gridDiv.style.gridTemplateColumns = `repeat(${N}, 1fr)`;
-      gridCells = [];
-      
-      for (let i = 0; i < N * N; i++) {
-        const cell = document.createElement('div');
-        cell.style.cssText = 'background:rgba(255,255,255,0.15); border-radius:4px; display:flex; align-items:center; justify-content:center; font-size: clamp(12px, 4vw, 24px); font-weight:bold; color:#fff; transition: background 0.2s; min-height: 25px;';
-        gridDiv.appendChild(cell);
-        gridCells.push(cell);
+  // --- Style + animasi, cuma di-inject sekali walau script dijalanin berkali-kali ---
+  const STYLE_ID = 'ani-solve-guide-style';
+  if (!document.getElementById(STYLE_ID)) {
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = `
+      @keyframes ani-target-pulse {
+        0%, 100% { box-shadow: inset 0 0 0 3px rgba(245,158,11,.95), 0 0 14px rgba(245,158,11,.55); }
+        50%      { box-shadow: inset 0 0 0 3px rgba(245,158,11,.45), 0 0 4px rgba(245,158,11,.25); }
       }
+      .ani-solve-cell { position:relative; box-sizing:border-box; border-radius:5px; pointer-events:none; }
+      .ani-solve-badge {
+        position:absolute; top:3px; left:3px; min-width:18px; padding:1px 5px;
+        background:rgba(15,23,42,.8); color:#f6f7fb;
+        font:700 clamp(11px,2.8vw,16px)/1.35 ui-monospace,monospace;
+        border-radius:5px; text-align:center; border:1px solid rgba(255,255,255,.25);
+        transition:background-color .15s ease, color .15s ease;
+      }
+      .ani-solve-cell.is-source { box-shadow: inset 0 0 0 3px #22c55e, 0 0 10px rgba(34,197,94,.5); }
+      .ani-solve-cell.is-source .ani-solve-badge { background:#16a34a; border-color:#bbf7d0; }
+      .ani-solve-cell.is-target { animation: ani-target-pulse 1.1s ease-in-out infinite; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  // --- Lapisan overlay terpisah, nempel presisi DI ATAS papan asli ---
+  // (dibikin terpisah dari tile asli supaya nggak ikut kehapus tiap kali
+  //  papan re-render habis geser tile -> ini biang kerok kedip-kedip lama)
+  const overlay = document.createElement('div');
+  overlay.id = 'ani-solve-overlay';
+  overlay.style.cssText = 'position:fixed; z-index:1000000; display:grid; gap:3px; pointer-events:none;';
+  document.body.appendChild(overlay);
+
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '✕ Matiin Guide';
+  closeBtn.style.cssText = 'position:fixed; z-index:1000001; top:14px; right:14px; background:#1e293b; color:#f6f7fb; border:1px solid #f59e0b; border-radius:8px; padding:6px 10px; font:700 12px sans-serif; cursor:pointer;';
+  document.body.appendChild(closeBtn);
+
+  let cells = [];
+  let currentN = 0;
+  let cachedOrder = [];
+  let raf = null;
+
+  // Urutan penyelesaian: kupas baris-atas + kolom-kiri lapis demi lapis,
+  // begitu sisa submatrix tinggal 2x2, isi 3 sel sisanya (1 sel terakhir
+  // otomatis jadi slot kosong).
+  function buildSolveOrder(n) {
+    const order = [];
+    let r0 = 0, c0 = 0;
+    const pos = (r, c) => r * n + c;
+    while ((n - r0) > 1 && (n - c0) > 1) {
+      if ((n - r0) === 2 && (n - c0) === 2) {
+        order.push(pos(r0, c0), pos(r0, c0 + 1), pos(r0 + 1, c0));
+        break;
+      }
+      for (let c = c0; c < n; c++) order.push(pos(r0, c));
+      for (let r = r0 + 1; r < n; r++) order.push(pos(r, c0));
+      r0++; c0++;
     }
+    return order;
+  }
+
+  function syncPosition() {
+    const rect = board.getBoundingClientRect();
+    overlay.style.left = rect.left + 'px';
+    overlay.style.top = rect.top + 'px';
+    overlay.style.width = rect.width + 'px';
+    overlay.style.height = rect.height + 'px';
+    overlay.style.display = rect.width ? 'grid' : 'none';
+    closeBtn.style.display = rect.width ? 'block' : 'none';
+  }
+
+  function rebuildCells(n) {
+    overlay.innerHTML = '';
+    overlay.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
+    overlay.style.gridTemplateRows = `repeat(${n}, 1fr)`;
+    cells = [];
+    for (let i = 0; i < n * n; i++) {
+      const cell = document.createElement('div');
+      cell.className = 'ani-solve-cell';
+      const badge = document.createElement('span');
+      badge.className = 'ani-solve-badge';
+      cell.appendChild(badge);
+      overlay.appendChild(cell);
+      cells.push({ cell, badge });
+    }
+    currentN = n;
+    cachedOrder = buildSolveOrder(n);
+  }
+
+  function render() {
+    raf = null;
+    const tiles = Array.from(board.querySelectorAll('.anipuzzle-tile'))
+      .sort((a, b) => (+a.getAttribute('data-index')) - (+b.getAttribute('data-index')));
+
+    if (!tiles.length) { overlay.style.display = 'none'; return; }
+
+    const n = Math.round(Math.sqrt(tiles.length));
+    if (n !== currentN) rebuildCells(n);
+    syncPosition();
+
+    const step = n > 1 ? 100 / (n - 1) : 100;
+    const values = new Array(n * n).fill(null);
 
     tiles.forEach(el => {
-      const slot = parseInt(el.getAttribute("data-index"), 10);
-      if (isNaN(slot) || slot < 0 || slot >= N * N) return;
-
-      if (el.classList.contains('empty')) {
-        gridCells[slot].textContent = '';
-        gridCells[slot].style.background = 'rgba(0,0,0,0.5)';
-        gridCells[slot].style.border = '1px dashed #555';
-        return;
-      }
-
+      const slot = parseInt(el.getAttribute('data-index'), 10);
+      if (isNaN(slot) || slot < 0 || slot >= n * n) return;
+      if (el.classList.contains('empty')) { values[slot] = null; return; }
       const posStr = el.style.backgroundPosition;
       if (!posStr) return;
-
-      const parts = posStr.split(" ").map(s => parseFloat(s));
+      const parts = posStr.split(' ').map(s => parseFloat(s));
       const col = Math.round(parts[0] / step);
       const row = Math.round(parts[1] / step);
-      
-      // Diubah kembali ke urutan horizontal (row * N + col + 1)
-      const id = (row * N) + col + 1; 
+      values[slot] = (row * n) + col + 1;
+    });
 
-      gridCells[slot].textContent = id;
-      gridCells[slot].style.background = 'rgba(255,255,255,0.15)';
-      gridCells[slot].style.border = 'none';
-      
-      const slotRow = Math.floor(slot / N);
-      const slotCol = slot % N;
-      const targetIdForThisSlot = (slotRow * N) + slotCol + 1;
-      
-      if (id === targetIdForThisSlot) {
-          gridCells[slot].style.color = '#38bdf8';
-          gridCells[slot].style.textShadow = '0 0 5px rgba(56,189,248,0.5)';
-          gridCells[slot].style.background = 'rgba(56,189,248,0.15)';
-      } else {
-          gridCells[slot].style.color = '#ffffff';
-          gridCells[slot].style.textShadow = 'none';
-      }
+    // Slot pertama di urutan solve yang isinya belum bener -> ini yang harus dikerjain
+    let targetSlot = -1;
+    for (const p of cachedOrder) {
+      if (values[p] !== (p + 1)) { targetSlot = p; break; }
+    }
+    // Cari tile yang punya nomor yang dibutuhin slot itu -> ini yang harus digeser
+    let sourceSlot = -1;
+    if (targetSlot !== -1) {
+      const wantedId = targetSlot + 1;
+      sourceSlot = values.findIndex(v => v === wantedId);
+    }
+
+    cells.forEach(({ cell, badge }, p) => {
+      const v = values[p];
+      badge.textContent = v ? v : '';
+      badge.style.visibility = v ? 'visible' : 'hidden';
+      cell.classList.toggle('is-target', p === targetSlot);
+      cell.classList.toggle('is-source', p === sourceSlot);
     });
   }
 
-  window.aniMinimapInterval = setInterval(updateMinimap, 150);
-  updateMinimap();
+  function scheduleRender() {
+    if (raf) return;
+    raf = requestAnimationFrame(render);
+  }
 
+  // Event-driven, bukan polling -> nggak ada jeda yang bikin kedip
+  const observer = new MutationObserver(scheduleRender);
+  observer.observe(board, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style'] });
+
+  window.addEventListener('scroll', syncPosition, true);
+  window.addEventListener('resize', syncPosition);
+  const posInterval = setInterval(syncPosition, 500); // cuma buat jaga-jaga posisi geser, ringan banget
+
+  function destroy() {
+    observer.disconnect();
+    clearInterval(posInterval);
+    window.removeEventListener('scroll', syncPosition, true);
+    window.removeEventListener('resize', syncPosition);
+    overlay.remove();
+    closeBtn.remove();
+    window.__aniSolveGuide = null;
+  }
+  closeBtn.addEventListener('click', destroy);
+  window.__aniSolveGuide = { destroy };
+
+  render();
 })();
